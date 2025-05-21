@@ -1,0 +1,169 @@
+name: PRODUCTION Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose: 
+        required: true
+        type: choice
+        options:
+          - 'quiet'
+          - '-v'
+          - '-vv'
+          - '-vvv'
+          - '-vvvv'
+        default: 'quiet'
+        description: Verbosity level for ansible playbook run
+      project:
+        required: true
+        type: choice
+        options:
+          - NONE
+          - ALL
+          - proj0
+          - proj1
+          - proj2
+        description: Single project name to deploy (ALL)
+        default: NONE
+
+env:
+  ENVIRONMENT: staging
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: hey
+        run: |
+          echo "project0: v1" >> /tmp/file0.yml
+          echo "project1: v1" >> /tmp/file0.yml
+          echo "project2: v1" >> /tmp/file0.yml
+  
+          echo "project0: v2" >> /tmp/file1.yml
+          echo "project1: v1" >> /tmp/file1.yml
+          echo "project2: v1" >> /tmp/file1.yml
+          echo '{}' >> /tmp/inputs.json
+      
+      - name: Filter projects
+        run: |
+          #!/bin/python
+          
+          import json
+          import yaml
+          import sys
+          import os
+
+          data = {}
+          try:
+            with open('/tmp/inputs.json', 'r') as f:
+              data = json.load(f)
+
+              if len(data.get('only_prjs', [])) > 0:
+                sys.exit(0)
+          
+          except FileNotFoundError:
+            print("JSON File not found.")
+          except Exception as e:
+            print(f"An unexpected error occurred while reading JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+
+          try:
+            new_versions = {}
+            with open('/tmp/file1.yml', 'r') as f:
+              new_versions = yaml.safe_load(f)
+            
+            old_versions = {}
+            with open('/tmp/file0.yml', 'r') as f:
+              old_versions = yaml.safe_load(f)
+          
+          except FileNotFoundError:
+            print("YAML File not found.")
+            sys.exit(1)
+          except Exception as e:
+            print(f"An unexpected error occurred while reading YAML: {e}", file=sys.stderr)
+            sys.exit(1)
+
+          result = []
+          count = 0
+          summary = "# Deployment Plan\n\n"
+          summary += "### Environment\n"
+          summary += "**staging**\n"
+          for key in new_versions.keys():
+            if key not in old_versions or new_versions[key] != old_versions[key]:
+              if count == 0:
+                count+=1
+                summary += "### Projects\n\n"
+                summary += "| Project | OLD Version | NEW Version |\n"
+                summary += "|---|---|---|\n"
+              summary += f"| {key} | {old_versions.get(key, 'none')} | {new_versions[key]} |\n"
+              result.append(key)
+
+          if len(result) == 0:
+            gh_env = os.environ.get("GITHUB_ENV")
+            try:
+              with open(gh_env, "a") as f:
+                f.write("NO_CHANGES=1\n")
+                print(f"No changes detected")
+                sys.exit(0)
+            except Exception as e:
+              print(f"An unexpected error occurred while writing to env file: {gh_env} {e}", file=sys.stderr)
+              sys.exit(1)
+
+          data['only_prjs'] = result
+          
+          count=0
+          summary+="\n\n"
+
+          for pkg in data.get('only_pkgs', []):
+            if count == 0:
+              count+=1
+              summary += "#### Deployment restricted to the following packages\n\n"
+            summary += f"- {pkg}\n"
+
+          count=0
+          summary+="\n\n"
+
+          for trg in data.get('only_trgs', []):
+            if count == 0:
+              count+=1
+              summary += "#### Deployment restricted to the following targets\n\n"
+            summary += f"- {trg}\n"
+
+          count=0
+          summary+="\n\n"
+
+          for ip in data.get('only_ips', []):
+            if count == 0:
+              count+=1
+              summary += "#### Deployment restricted to the following IPs\n\n"
+            summary += f"- {ip}\n"
+
+          try:
+            with open('/tmp/inputs.json', 'w') as f:
+              json.dump(data, f)
+          except Exception as e:
+            print(f"An unexpected error occurred while writing JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+
+          with open(os.environ.get('GITHUB_STEP_SUMMARY'), 'a') as f:
+            f.write(summary)
+        shell: python
+
+  dry-run:
+    needs: diff
+    runs-on: ubuntu-latest
+    steps:
+      - name: hey
+        run: |
+          echo "DRY-RUN" >> $GITHUB_STEP_SUMMARY
+  
+  full-run:
+    needs: dry-run
+    environment: gated
+    runs-on: ubuntu-latest
+    steps:
+      - name: hey
+        run: |
+          echo "FULL-RUN" >> $GITHUB_STEP_SUMMARY
+  
